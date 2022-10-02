@@ -21,11 +21,15 @@ void PutFixed64(std::string* dst, uint64_t value) {
 char* EncodeVarint32(char* dst, uint32_t v) {
   // Operate on characters as unsigneds
   uint8_t* ptr = reinterpret_cast<uint8_t*>(dst);
+  // 设置字节最高位的掩码
   static const int B = 128;
   if (v < (1 << 7)) {
+    // 只需要1字节
     *(ptr++) = v;
   } else if (v < (1 << 14)) {
+    // 低7位放在低字节，最高位置1
     *(ptr++) = v | B;
+    // 7-14位放在第二个字节，最高位置0
     *(ptr++) = v >> 7;
   } else if (v < (1 << 21)) {
     *(ptr++) = v | B;
