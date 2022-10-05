@@ -38,6 +38,7 @@ class BlockHandle {
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* input);
 
+  //offset指向文件的偏移量，size表示这个Block的大小
  private:
   uint64_t offset_;
   uint64_t size_;
@@ -66,7 +67,9 @@ class Footer {
   Status DecodeFrom(Slice* input);
 
  private:
+  // 定位Meta Index Block
   BlockHandle metaindex_handle_;
+  // 定位Index Block
   BlockHandle index_handle_;
 };
 

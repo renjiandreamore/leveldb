@@ -94,10 +94,12 @@ void BlockBuilder::Add(const Slice& key, const Slice& value) {
   PutVarint32(&buffer_, value.size());
 
   // Add string delta to buffer_ followed by value
+  //指针移动，指向non_shared开头
   buffer_.append(key.data() + shared, non_shared);
   buffer_.append(value.data(), value.size());
 
   // Update state
+  //last_key_ 记录前一个key，这里更新为当前key供下个key使用
   last_key_.resize(shared);
   last_key_.append(key.data() + shared, non_shared);
   assert(Slice(last_key_) == key);
