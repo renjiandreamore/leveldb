@@ -27,18 +27,20 @@ class BloomFilterPolicy : public FilterPolicy {
 
   void CreateFilter(const Slice* keys, int n, std::string* dst) const override {
     // Compute bloom filter size (in both bits and bytes)
-    size_t bits = n * bits_per_key_;
+    //bits_per_key_ 默认 = 10，为每个元素分10bit
+    size_t bits = n * bits_per_key_; //m
 
     // For small n, we can see a very high false positive rate.  Fix it
     // by enforcing a minimum bloom filter length.
     if (bits < 64) bits = 64;
 
+    //按字节算需要多少bit
     size_t bytes = (bits + 7) / 8;
     bits = bytes * 8;
 
     const size_t init_size = dst->size();
     dst->resize(init_size + bytes, 0);
-    dst->push_back(static_cast<char>(k_));  // Remember # of probes in filter
+    dst->push_back(static_cast<char>(k_));  // Remember # of probes(hash function) in filter
     char* array = &(*dst)[init_size];
     for (int i = 0; i < n; i++) {
       // Use double-hashing to generate a sequence of hash values.
@@ -80,7 +82,10 @@ class BloomFilterPolicy : public FilterPolicy {
   }
 
  private:
+  //假如我们希望把假阳率控制在0.01以下，算出 bits_per_key_ =~ 10
+  //default = 10, which is m/n, m = bloom filter's total length, n = # of keys
   size_t bits_per_key_;
+  //k_ = num of hash functions
   size_t k_;
 };
 }  // namespace

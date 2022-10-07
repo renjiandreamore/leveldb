@@ -48,6 +48,7 @@ Slice FilterBlockBuilder::Finish() {
   return Slice(result_);
 }
 
+//根据一组key，创建对应的bloomfilter的内容，并写进results
 void FilterBlockBuilder::GenerateFilter() {
   const size_t num_keys = start_.size();
   if (num_keys == 0) {
@@ -74,6 +75,7 @@ void FilterBlockBuilder::GenerateFilter() {
   start_.clear();
 }
 
+//生成filter block reader的参数
 FilterBlockReader::FilterBlockReader(const FilterPolicy* policy,
                                      const Slice& contents)
     : policy_(policy), data_(nullptr), offset_(nullptr), num_(0), base_lg_(0) {

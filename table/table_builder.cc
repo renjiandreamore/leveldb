@@ -38,6 +38,7 @@ struct TableBuilder::Rep {
   Options options;
   Options index_block_options;
   WritableFile* file;
+  //what's this use for?
   uint64_t offset;
   Status status;
   BlockBuilder data_block;
