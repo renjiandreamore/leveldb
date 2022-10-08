@@ -28,6 +28,7 @@ class BytewiseComparatorImpl : public Comparator {
     return a.compare(b);
   }
 
+  //大于等于start（data block最后一个key），小于limit的最小的key
   void FindShortestSeparator(std::string* start,
                              const Slice& limit) const override {
     // Find length of common prefix
@@ -51,6 +52,7 @@ class BytewiseComparatorImpl : public Comparator {
     }
   }
 
+  //大于等于某data block最后一个key的最近的下一个key
   void FindShortSuccessor(std::string* key) const override {
     // Find first character that can be incremented
     size_t n = key->size();

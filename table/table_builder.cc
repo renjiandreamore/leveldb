@@ -18,6 +18,7 @@
 
 namespace leveldb {
 
+//不断添加键值对，逐渐构建一个Table
 struct TableBuilder::Rep {
   Rep(const Options& opt, WritableFile* f)
       : options(opt),
@@ -38,7 +39,6 @@ struct TableBuilder::Rep {
   Options options;
   Options index_block_options;
   WritableFile* file;
-  //what's this use for?
   uint64_t offset;
   Status status;
   BlockBuilder data_block;
@@ -100,6 +100,7 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
     assert(r->options.comparator->Compare(key, Slice(r->last_key)) > 0);
   }
 
+  //先写index
   if (r->pending_index_entry) {
     assert(r->data_block.empty());
     r->options.comparator->FindShortestSeparator(&r->last_key, key);
@@ -109,14 +110,18 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
     r->pending_index_entry = false;
   }
 
+  //再写filter block
   if (r->filter_block != nullptr) {
     r->filter_block->AddKey(key);
   }
 
   r->last_key.assign(key.data(), key.size());
   r->num_entries++;
+
+  //最后写data block
   r->data_block.Add(key, value);
 
+  //如果当前data block builder里存的数据超过4kb，则写入文件
   const size_t estimated_block_size = r->data_block.CurrentSizeEstimate();
   if (estimated_block_size >= r->options.block_size) {
     Flush();
@@ -129,11 +134,14 @@ void TableBuilder::Flush() {
   if (!ok()) return;
   if (r->data_block.empty()) return;
   assert(!r->pending_index_entry);
+  //把data block写进 .idb 文件
   WriteBlock(&r->data_block, &r->pending_handle);
   if (ok()) {
     r->pending_index_entry = true;
     r->status = r->file->Flush();
   }
+
+  //给当前block开启bloomfilter并把内容写入filter
   if (r->filter_block != nullptr) {
     r->filter_block->StartBlock(r->offset);
   }
@@ -175,6 +183,7 @@ void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
   block->Reset();
 }
 
+//写入文件，加一些校验信息
 void TableBuilder::WriteRawBlock(const Slice& block_contents,
                                  CompressionType type, BlockHandle* handle) {
   Rep* r = rep_;
@@ -198,6 +207,7 @@ Status TableBuilder::status() const { return rep_->status; }
 
 Status TableBuilder::Finish() {
   Rep* r = rep_;
+  //写最后剩余的data block
   Flush();
   assert(!r->closed);
   r->closed = true;

@@ -9,6 +9,8 @@
 #include <cstdint>
 
 namespace leveldb {
+
+//在远距离数据通信中，为确保高效而无差错地传送数据，必须对数据进行校验即差错控制(crc = cyclic redundant check 循环冗余校验)
 namespace crc32c {
 
 // Return the crc32c of concat(A, data[0,n-1]) where init_crc is the

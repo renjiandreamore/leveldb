@@ -14,6 +14,7 @@
 
 namespace leveldb {
 
+//called by db_impl when writing level 0 table
 Status BuildTable(const std::string& dbname, Env* env, const Options& options,
                   TableCache* table_cache, Iterator* iter, FileMetaData* meta) {
   Status s;
@@ -31,10 +32,14 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options,
     TableBuilder* builder = new TableBuilder(options, file);
     meta->smallest.DecodeFrom(iter->key());
     Slice key;
+
+    //遍历迭代器，将键值对加入到一个 TableBuilder 对象里
     for (; iter->Valid(); iter->Next()) {
       key = iter->key();
       builder->Add(key, iter->value());
     }
+
+    //同时维护 meta 信息，包括 smallest、largest 和 file_size
     if (!key.empty()) {
       meta->largest.DecodeFrom(key);
     }

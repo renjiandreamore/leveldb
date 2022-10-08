@@ -37,6 +37,7 @@
 
 namespace leveldb {
 
+//不断添加键值对，逐渐构建一个Block，主要是添加键值对，然后生成Block的数据
 BlockBuilder::BlockBuilder(const Options* options)
     : options_(options), restarts_(), counter_(0), finished_(false) {
   assert(options->block_restart_interval >= 1);
@@ -86,6 +87,7 @@ void BlockBuilder::Add(const Slice& key, const Slice& value) {
     restarts_.push_back(buffer_.size());
     counter_ = 0;
   }
+  //for index block builder, last_key = key, so no shared prefix
   const size_t non_shared = key.size() - shared;
 
   // Add "<shared><non_shared><value_size>" to buffer_
