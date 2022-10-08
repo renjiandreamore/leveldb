@@ -44,6 +44,7 @@ Status Writer::AddRecord(const Slice& slice) {
     const int leftover = kBlockSize - block_offset_;
     assert(leftover >= 0);
     if (leftover < kHeaderSize) {
+      //如果发现block剩余大小小于7（一个record至少需要7字节：checksum (4 bytes), length (2 bytes), type (1 byte)），产生新block，并把剩余位置0
       // Switch to a new block
       if (leftover > 0) {
         // Fill the trailer (literal below relies on kHeaderSize being 7)
