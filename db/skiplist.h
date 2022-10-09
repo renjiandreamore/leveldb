@@ -146,7 +146,7 @@ struct SkipList<Key, Comparator>::Node {
 
   Key const key;
 
-  // Accessors/mutators for links.  Wrapped in methods so we can
+  // Accessors/mutators for links.  Wrapped in methods, so we can
   // add the appropriate barriers as necessary.
   Node* Next(int n) {
     assert(n >= 0);
@@ -179,6 +179,7 @@ struct SkipList<Key, Comparator>::Node {
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::NewNode(
     const Key& key, int height) {
+  //使用arena分配内存
   char* const node_memory = arena_->AllocateAligned(
       sizeof(Node) + sizeof(std::atomic<Node*>) * (height - 1));
   return new (node_memory) Node(key);
@@ -257,6 +258,7 @@ bool SkipList<Key, Comparator>::KeyIsAfterNode(const Key& key, Node* n) const {
 
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
+//找到最底层第一个大于等于key的node
 SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key,
                                               Node** prev) const {
   Node* x = head_;
@@ -280,6 +282,7 @@ SkipList<Key, Comparator>::FindGreaterOrEqual(const Key& key,
 
 template <typename Key, class Comparator>
 typename SkipList<Key, Comparator>::Node*
+//找到最底层最后一个小于key的node
 SkipList<Key, Comparator>::FindLessThan(const Key& key) const {
   Node* x = head_;
   int level = GetMaxHeight() - 1;
@@ -300,6 +303,7 @@ SkipList<Key, Comparator>::FindLessThan(const Key& key) const {
 }
 
 template <typename Key, class Comparator>
+//找到最底层最后一个node
 typename SkipList<Key, Comparator>::Node* SkipList<Key, Comparator>::FindLast()
     const {
   Node* x = head_;

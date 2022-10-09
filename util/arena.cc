@@ -38,7 +38,7 @@ char* Arena::AllocateFallback(size_t bytes) {
   return result;
 }
 
-//what's this?
+//尝试分配内存，不够则fallback分配
 char* Arena::AllocateAligned(size_t bytes) {
   const int align = (sizeof(void*) > 8) ? sizeof(void*) : 8;
   static_assert((align & (align - 1)) == 0,
