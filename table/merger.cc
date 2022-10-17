@@ -61,6 +61,7 @@ class MergingIterator : public Iterator {
     // the smallest child and key() == current_->key().  Otherwise,
     // we explicitly position the non-current_ children.
     if (direction_ != kForward) {
+      //说明变换了方向，之前是Prev，这时候需要将所有的子Iterator Seek到当前元素，使得除了current_的所有子Iterator都指向大于当前键的元素。
       for (int i = 0; i < n_; i++) {
         IteratorWrapper* child = &children_[i];
         if (child != current_) {

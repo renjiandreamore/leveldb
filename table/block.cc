@@ -140,6 +140,7 @@ class Block::Iter : public Iterator {
     ParseNextKey();
   }
 
+  //找到当前元素的前一个元素所在的restart point，然后顺序搜索即可
   void Prev() override {
     assert(Valid());
 
@@ -161,6 +162,7 @@ class Block::Iter : public Iterator {
     } while (ParseNextKey() && NextEntryOffset() < original);
   }
 
+  //先对restart point进行二分搜索，找到restart point对应的键小于等于target的最大的restart point，如果键存在，则必在这个restart point开始的16个键中，再从这个位置开始顺序搜索
   void Seek(const Slice& target) override {
     // Binary search in restart array to find the last restart point
     // with a key < target

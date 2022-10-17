@@ -43,7 +43,7 @@ static double MaxBytesForLevel(const Options* options, int level) {
   // the level-0 compaction threshold based on number of files.
 
   // Result for both level-0 and level-1
-  double result = 10. * 1048576.0;
+  double result = 10. * 1048576.0; //10M for level-0
   while (level > 1) {
     result *= 10;
     level--;
@@ -53,7 +53,7 @@ static double MaxBytesForLevel(const Options* options, int level) {
 
 static uint64_t MaxFileSizeForLevel(const Options* options, int level) {
   // We could vary per level to reduce number of files?
-  return TargetFileSize(options);
+  return TargetFileSize(options); //default 2M each file
 }
 
 static int64_t TotalFileSize(const std::vector<FileMetaData*>& files) {
@@ -200,6 +200,7 @@ class Version::LevelFileNumIterator : public Iterator {
 
  private:
   const InternalKeyComparator icmp_;
+  //保存文件的file number，size，最小最大key等
   const std::vector<FileMetaData*>* const flist_;
   uint32_t index_;
 
@@ -226,6 +227,7 @@ Iterator* Version::NewConcatenatingIterator(const ReadOptions& options,
       vset_->table_cache_, options);
 }
 
+//level0的file可能有overlap
 void Version::AddIterators(const ReadOptions& options,
                            std::vector<Iterator*>* iters) {
   // Merge all level zero files together since they may overlap
