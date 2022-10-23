@@ -42,8 +42,8 @@ namespace {
 // are kept in a circular doubly linked list ordered by access time.
 struct LRUHandle {
   void* value;
-  void (*deleter)(const Slice&, void* value);
-  LRUHandle* next_hash;
+  void (*deleter)(const Slice&, void* value); //数据项被移出缓存时的回调函数
+  LRUHandle* next_hash; //哈希表的链接
   LRUHandle* next;
   LRUHandle* prev;
   size_t charge;  // TODO(opt): Only allow uint32_t?
@@ -186,13 +186,13 @@ class LRUCache {
   // Dummy head of LRU list.
   // lru.prev is newest entry, lru.next is oldest entry.
   // Entries have refs==1 and in_cache==true.
-  LRUHandle lru_ GUARDED_BY(mutex_);
+  LRUHandle lru_ GUARDED_BY(mutex_); //缓存项链表
 
   // Dummy head of in-use list.
   // Entries are in use by clients, and have refs >= 2 and in_cache==true.
-  LRUHandle in_use_ GUARDED_BY(mutex_);
+  LRUHandle in_use_ GUARDED_BY(mutex_); //当前正在被使用的缓存项链表
 
-  HandleTable table_ GUARDED_BY(mutex_);
+  HandleTable table_ GUARDED_BY(mutex_); //缓存的哈希表，快速查找缓存项
 };
 
 LRUCache::LRUCache() : capacity_(0), usage_(0) {
@@ -217,7 +217,7 @@ LRUCache::~LRUCache() {
 
 void LRUCache::Ref(LRUHandle* e) {
   if (e->refs == 1 && e->in_cache) {  // If on lru_ list, move to in_use_ list.
-    LRU_Remove(e);
+    LRU_Remove(e); //即可以从lru list里remove，然后挪到in use里；也可以从in use里remove，然后挪到in use的头部
     LRU_Append(&in_use_, e);
   }
   e->refs++;
@@ -250,6 +250,7 @@ void LRUCache::LRU_Append(LRUHandle* list, LRUHandle* e) {
   e->next->prev = e;
 }
 
+//一般都和下面release一起使用：使用完缓存项后，调用Release释放缓存
 Cache::Handle* LRUCache::Lookup(const Slice& key, uint32_t hash) {
   MutexLock l(&mutex_);
   LRUHandle* e = table_.Lookup(key, hash);
@@ -264,6 +265,7 @@ void LRUCache::Release(Cache::Handle* handle) {
   Unref(reinterpret_cast<LRUHandle*>(handle));
 }
 
+//insert相当于自带client先使用再release
 Cache::Handle* LRUCache::Insert(const Slice& key, uint32_t hash, void* value,
                                 size_t charge,
                                 void (*deleter)(const Slice& key,
@@ -334,7 +336,7 @@ void LRUCache::Prune() {
 }
 
 static const int kNumShardBits = 4;
-static const int kNumShards = 1 << kNumShardBits;
+static const int kNumShards = 1 << kNumShardBits; //16
 
 class ShardedLRUCache : public Cache {
  private:
@@ -346,7 +348,7 @@ class ShardedLRUCache : public Cache {
     return Hash(s.data(), s.size(), 0);
   }
 
-  static uint32_t Shard(uint32_t hash) { return hash >> (32 - kNumShardBits); }
+  static uint32_t Shard(uint32_t hash) { return hash >> (32 - kNumShardBits); } //将key的hash的高4位分进某shard桶
 
  public:
   explicit ShardedLRUCache(size_t capacity) : last_id_(0) {
