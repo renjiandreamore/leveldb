@@ -120,17 +120,25 @@ bool MemTable::Get(const LookupKey& key, std::string* value, Status* s) {
     const char* entry = iter.key();
     uint32_t key_length;
     const char* key_ptr = GetVarint32Ptr(entry, entry + 5, &key_length);
+    // 看查找到的键里面包含的User Key是否和搜索的User Key相同
+    // 这里需要这个判断是因为迭代器Seek时，指向大于等于搜索键的位置，所以有可能这个键是大于搜索的键的
+    // 这边不需要判断SequenceNumber，便可实现snapshot功能，原因是搜索的键（lookup key）里面是包含SequenceNumber
+    // 的，并且User Key相同时，SequenceNumber大的排在前面。所以Seek时跳过了User Key相同，但是SequenceNumber
+    // 大于当前搜索的键的SequenceNumber的键，所以找到的就是那个snapshot之前的状态。
+    // (key0_1 -> key1_5 -> key1_1).seek(key1_3) -> key1_1
     if (comparator_.comparator.user_comparator()->Compare(
             Slice(key_ptr, key_length - 8), key.user_key()) == 0) {
       // Correct user key
       const uint64_t tag = DecodeFixed64(key_ptr + key_length - 8);
       switch (static_cast<ValueType>(tag & 0xff)) {
         case kTypeValue: {
+          // 如果tag是一个插入，那么解析值，返回
           Slice v = GetLengthPrefixedSlice(key_ptr + key_length);
           value->assign(v.data(), v.size());
           return true;
         }
         case kTypeDeletion:
+          // 如果tag是一个删除，表示键找不到返回
           *s = Status::NotFound(Slice());
           return true;
       }

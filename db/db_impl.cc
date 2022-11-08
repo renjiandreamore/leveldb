@@ -48,7 +48,7 @@ struct DBImpl::Writer {
   WriteBatch* batch;
   bool sync;
   bool done;
-  port::CondVar cv;
+  port::CondVar cv; // 用来等待其它线程的通知
 };
 
 struct DBImpl::CompactionState {
@@ -1115,6 +1115,7 @@ int64_t DBImpl::TEST_MaxNextLevelOverlappingBytes() {
 Status DBImpl::Get(const ReadOptions& options, const Slice& key,
                    std::string* value) {
   Status s;
+  //读取metadata，ref时需要加锁
   MutexLock l(&mutex_);
   SequenceNumber snapshot;
   if (options.snapshot != nullptr) {
@@ -1126,7 +1127,15 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key,
 
   MemTable* mem = mem_;
   MemTable* imm = imm_;
+
+  // SSTable则由当前的version代表，一个version包含了当前版本的SSTable的集合
   Version* current = versions_->current();
+
+  // 这里都调用了Ref，LevelDB里大量使用了这种引用计数的方式管理对象，这里表示读取需要引用这些对象，假设在读取过程
+  // 中其他线程发生了MemTable写满了，或者Immutable MemTable写入完成了需要删除了，或者做了一次Compaction，生
+  // 成了新的Version，所引用的SSTable不再有效了，这些都需要对这些对象做一些改变，比如删除等，但是当前线程还引用着
+  // 这些对象，所以这些对象还不能被删除。采用引用计数，其它线程删除对象时只是简单的Unref，因为当前线程还引用着这些
+  // 对象，所以计数>=1，这些对象不会被删除，而当读取结束，调用Unref时，如果对象的计数是0，那么对象会被删除。
   mem->Ref();
   if (imm != nullptr) imm->Ref();
   current->Ref();
@@ -1204,15 +1213,20 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   w.done = false;
 
   MutexLock l(&mutex_);
-  writers_.push_back(&w);
+  writers_.push_back(&w); //[a,b,c,...,w]
+  // 判断是否完成，或者自己是否是writers_队列里的第一个成员。
+  // 有可能其它线程写入时把自己的内容也写入了，这样自己就是done，或者当自己是头元素了，表示轮到自己写入了
   while (!w.done && &w != writers_.front()) {
     w.cv.Wait();
   }
+
+  //判断写入是否完成了，完成了就可以返回了
   if (w.done) {
     return w.status;
   }
 
   // May temporarily unlock and wait.
+  // 如果写入太快，进行限流，如果MemTable满了，生成新的MemTable
   Status status = MakeRoomForWrite(updates == nullptr);
   uint64_t last_sequence = versions_->LastSequence();
   Writer* last_writer = &w;
@@ -1226,7 +1240,11 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     // and protects against concurrent loggers and concurrent writes
     // into mem_.
     {
+      // 因为接下来的写入可能是一个费时的过程，解锁后，其它线程可以Get，其它线程也可以继续将writer
+      // 插入到writers_里面，但是插入后，因为不是头元素，会等待，所以不会冲突
       mutex_.Unlock();
+
+      //写入log，根据选项sync
       status = log_->AddRecord(WriteBatchInternal::Contents(write_batch));
       bool sync_error = false;
       if (status.ok() && options.sync) {
@@ -1236,8 +1254,11 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
         }
       }
       if (status.ok()) {
+        // 写入到MemTable里, skiplist add
         status = WriteBatchInternal::InsertInto(write_batch, mem_);
       }
+
+      // 加锁需要修改全局的SequenceNumber以及writers_
       mutex_.Lock();
       if (sync_error) {
         // The state of the log file is indeterminate: the log record we
@@ -1251,6 +1272,8 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     versions_->SetLastSequence(last_sequence);
   }
 
+  // 从writers_队列从头开始，将写入完成的writer标识成done，并且弹出，通知这些writer
+  // 这样这些writer的线程会被唤醒，发现自己的写入已经完成了，就会返回
   while (true) {
     Writer* ready = writers_.front();
     writers_.pop_front();
@@ -1263,6 +1286,8 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   }
 
   // Notify new head of write queue
+
+  // 如果writers_里还有元素，就通知头元素，让它可以进来开始写入
   if (!writers_.empty()) {
     writers_.front()->cv.Signal();
   }
@@ -1282,8 +1307,9 @@ WriteBatch* DBImpl::BuildBatchGroup(Writer** last_writer) {
   size_t size = WriteBatchInternal::ByteSize(first->batch);
 
   // Allow the group to grow up to a maximum size, but if the
-  // original write is small, limit the growth so we do not slow
+  // original write is small, limit the growth, so we do not slow
   // down the small write too much.
+  // 计算write batch的最大size，如果第一个的size比较小的话，限制最大的size，以防小的写入太慢
   size_t max_size = 1 << 20;
   if (size <= (128 << 10)) {
     max_size = size + (128 << 10);
@@ -1334,6 +1360,8 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       break;
     } else if (allow_delay && versions_->NumLevelFiles(0) >=
                                   config::kL0_SlowdownWritesTrigger) {
+      // 判断Level 0的文件是否>=8，是的话就sleep 1ms
+
       // We are getting close to hitting a hard limit on the number of
       // L0 files.  Rather than delaying a single write by several
       // seconds when we hit the hard limit, start delaying each
@@ -1346,18 +1374,27 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       mutex_.Lock();
     } else if (!force &&
                (mem_->ApproximateMemoryUsage() <= options_.write_buffer_size)) {
+      //判断MemTable里是否有空间，有空间的话就可以返回
+
       // There is room in current memtable
       break;
     } else if (imm_ != nullptr) {
+      // 如果MemTable没有空间，判断Immutable MemTable是否存在，存在的话,
+      // 说明上一次写满的MemTable还没有完成写入到SSTable中，说明写入太快了，需要等待Immutable MemTable写入完成；
+
       // We have filled up the current memtable, but the previous
       // one is still being compacted, so we wait.
       Log(options_.info_log, "Current memtable full; waiting...\n");
       background_work_finished_signal_.Wait();
     } else if (versions_->NumLevelFiles(0) >= config::kL0_StopWritesTrigger) {
+      //再判断Level 0的文件数是否>=12，如果太大，说明写入太快了，需要等待Compaction的完成
+
       // There are too many level-0 files.
       Log(options_.info_log, "Too many L0 files; waiting...\n");
       background_work_finished_signal_.Wait();
     } else {
+      //说明可以写入，但是MemTable已经写满了，需要将MemTable变成Immutable MemTable，生成一个新的MemTable，触发后台线程写入到SSTable中
+
       // Attempt to switch to a new memtable and trigger compaction of old
       assert(versions_->PrevLogNumber() == 0);
       uint64_t new_log_number = versions_->NewFileNumber();

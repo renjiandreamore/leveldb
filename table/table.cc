@@ -223,18 +223,23 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
                                                 const Slice&)) {
   Status s;
   Iterator* iiter = rep_->index_block->NewIterator(rep_->options.comparator);
+  // 搜索索引
   iiter->Seek(k);
+  // 找到一个索引项
   if (iiter->Valid()) {
     Slice handle_value = iiter->value();
     FilterBlockReader* filter = rep_->filter;
     BlockHandle handle;
+    // 如果使用了布隆过滤器，则先查找布隆过滤器，如果没有发现，就直接返回了
     if (filter != nullptr && handle.DecodeFrom(&handle_value).ok() &&
         !filter->KeyMayMatch(handle.offset(), k)) {
       // Not found
     } else {
+      // 读取一个Data Block
       Iterator* block_iter = BlockReader(this, options, iiter->value());
       block_iter->Seek(k);
       if (block_iter->Valid()) {
+        // 找到对应的键，调用回调函数
         (*handle_result)(arg, block_iter->key(), block_iter->value());
       }
       s = block_iter->status();

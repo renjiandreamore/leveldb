@@ -102,9 +102,11 @@ Status TableCache::Get(const ReadOptions& options, uint64_t file_number,
                        void (*handle_result)(void*, const Slice&,
                                              const Slice&)) {
   Cache::Handle* handle = nullptr;
+  // 从表缓存里找到相应的file_number对应的文件
   Status s = FindTable(file_number, file_size, &handle);
   if (s.ok()) {
     Table* t = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+    // 实际的查询
     s = t->InternalGet(options, k, arg, handle_result);
     cache_->Release(handle);
   }

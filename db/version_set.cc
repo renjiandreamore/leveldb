@@ -261,12 +261,19 @@ struct Saver {
   std::string* value;
 };
 }  // namespace
+
+// 因为SSTable里保存的是Internal Key，但是搜索的是User Key，
+// 而Iterator Seek的是第一个大于等于待搜索的键的数据项，
+// 如果某个User Key不存在，是会定位到下一个User Key上面的，
+// 所以找到Internal Key后，还需要比较里的User Key是否相同，这就是回调函数的作用了。
 static void SaveValue(void* arg, const Slice& ikey, const Slice& v) {
   Saver* s = reinterpret_cast<Saver*>(arg);
   ParsedInternalKey parsed_key;
   if (!ParseInternalKey(ikey, &parsed_key)) {
+    // 如果无法解析键，表示数据损坏
     s->state = kCorrupt;
   } else {
+    // 比较对应的User Key是否相同
     if (s->ucmp->Compare(parsed_key.user_key, s->user_key) == 0) {
       s->state = (parsed_key.type == kTypeValue) ? kFound : kDeleted;
       if (s->state == kFound) {
@@ -288,6 +295,7 @@ void Version::ForEachOverlapping(Slice user_key, Slice internal_key, void* arg,
   std::vector<FileMetaData*> tmp;
   tmp.reserve(files_[0].size());
   for (uint32_t i = 0; i < files_[0].size(); i++) {
+    // 这里将符合键在smallest和largest之间的FileMetaData都加入tmp
     FileMetaData* f = files_[0][i];
     if (ucmp->Compare(user_key, f->smallest.user_key()) >= 0 &&
         ucmp->Compare(user_key, f->largest.user_key()) <= 0) {
@@ -295,6 +303,7 @@ void Version::ForEachOverlapping(Slice user_key, Slice internal_key, void* arg,
     }
   }
   if (!tmp.empty()) {
+    // 排序，让最新的文件排在前面，因为后写入的键在更新的文件里，一个个文件搜索时，可以先处理新文件
     std::sort(tmp.begin(), tmp.end(), NewestFirst);
     for (uint32_t i = 0; i < tmp.size(); i++) {
       if (!(*func)(arg, 0, tmp[i])) {
@@ -307,7 +316,7 @@ void Version::ForEachOverlapping(Slice user_key, Slice internal_key, void* arg,
   for (int level = 1; level < config::kNumLevels; level++) {
     size_t num_files = files_[level].size();
     if (num_files == 0) continue;
-
+    // 对于其它的level，只需要通过二分搜索找到相应的文件。
     // Binary search to find earliest index whose largest key >= internal_key.
     uint32_t index = FindFile(vset_->icmp_, files_[level], internal_key);
     if (index < num_files) {
@@ -353,6 +362,7 @@ Status Version::Get(const ReadOptions& options, const LookupKey& k,
       state->last_file_read = f;
       state->last_file_read_level = level;
 
+      // 通过table_cache_查询键
       state->s = state->vset->table_cache_->Get(*state->options, f->number,
                                                 f->file_size, state->ikey,
                                                 &state->saver, SaveValue);
@@ -362,12 +372,12 @@ Status Version::Get(const ReadOptions& options, const LookupKey& k,
       }
       switch (state->saver.state) {
         case kNotFound:
-          return true;  // Keep searching in other files
+          return true;  // Keep searching in other files， 没有找到键的话，继续搜索下一个
         case kFound:
-          state->found = true;
+          state->found = true; // 找到的话，就可以返回了
           return false;
         case kDeleted:
-          return false;
+          return false; // 表示键被删除了，也就是可以确定这个键不存在，返回
         case kCorrupt:
           state->s =
               Status::Corruption("corrupted key for ", state->saver.user_key);
