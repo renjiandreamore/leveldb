@@ -596,6 +596,8 @@ class VersionSet::Builder {
   };
 
   typedef std::set<FileMetaData*, BySmallestKey> FileSet;
+
+  // 表示某一Level，删除的文件和增加的文件
   struct LevelState {
     std::set<uint64_t> deleted_files;
     FileSet* added_files;
@@ -640,6 +642,8 @@ class VersionSet::Builder {
   // Apply all of the edits in *edit to the current state.
   void Apply(const VersionEdit* edit) {
     // Update compaction pointers
+    // 首先更新comact_pointer_，这个直接在VersionSet里更新，因为这个的信息只有一份
+    // 新版本肯定是覆盖旧版本的，所以直接更新即可
     for (size_t i = 0; i < edit->compact_pointers_.size(); i++) {
       const int level = edit->compact_pointers_[i].first;
       vset_->compact_pointer_[level] =
@@ -647,6 +651,7 @@ class VersionSet::Builder {
     }
 
     // Delete files
+    // 把VersionEdit里删除的文件插入到levels_相应Level里面去
     for (const auto& deleted_file_set_kvp : edit->deleted_files_) {
       const int level = deleted_file_set_kvp.first;
       const uint64_t number = deleted_file_set_kvp.second;
@@ -654,8 +659,10 @@ class VersionSet::Builder {
     }
 
     // Add new files
+    // 把VersionEdit里添加的文件插入到levels_相应的Level里去
     for (size_t i = 0; i < edit->new_files_.size(); i++) {
       const int level = edit->new_files_[i].first;
+      // 因为是新文件，构造一个FileMetaData
       FileMetaData* f = new FileMetaData(edit->new_files_[i].second);
       f->refs = 1;
 
@@ -681,19 +688,24 @@ class VersionSet::Builder {
   }
 
   // Save the current state in *v.
+  // SaveTo 生成一个新版本
   void SaveTo(Version* v) {
     BySmallestKey cmp;
     cmp.internal_comparator = &vset_->icmp_;
     for (int level = 0; level < config::kNumLevels; level++) {
       // Merge the set of added files with the set of pre-existing files.
       // Drop any deleted files.  Store the result in *v.
+      // 拿出原本Version里的文件，以及Builder里累积的，添加的文件
       const std::vector<FileMetaData*>& base_files = base_->files_[level];
       std::vector<FileMetaData*>::const_iterator base_iter = base_files.begin();
       std::vector<FileMetaData*>::const_iterator base_end = base_files.end();
       const FileSet* added_files = levels_[level].added_files;
       v->files_[level].reserve(base_files.size() + added_files->size());
+      // 按顺序进行合并
       for (const auto& added_file : *added_files) {
         // Add all smaller files listed in base_
+        // 找到base里面比added_file小的文件，添加到新的Version里
+        // 采用MaybeAddFile，让被删除的文件无法添加
         for (std::vector<FileMetaData*>::const_iterator bpos =
                  std::upper_bound(base_iter, base_end, added_file, cmp);
              base_iter != bpos; ++base_iter) {
@@ -704,6 +716,7 @@ class VersionSet::Builder {
       }
 
       // Add remaining base files
+      // 添加剩下的文件
       for (; base_iter != base_end; ++base_iter) {
         MaybeAddFile(v, level, *base_iter);
       }
@@ -726,6 +739,7 @@ class VersionSet::Builder {
     }
   }
 
+  // 让被删除的文件无法添加
   void MaybeAddFile(Version* v, int level, FileMetaData* f) {
     if (levels_[level].deleted_files.count(f->number) > 0) {
       // File is deleted: do nothing
@@ -786,7 +800,9 @@ void VersionSet::AppendVersion(Version* v) {
   v->next_->prev_ = v;
 }
 
+// 输入参数edit表示的是改变的内容，比如一次Compaction可以得到edit
 Status VersionSet::LogAndApply(VersionEdit* edit, port::Mutex* mu) {
+  // 设定当前的log number
   if (edit->has_log_number_) {
     assert(edit->log_number_ >= log_number_);
     assert(edit->log_number_ < next_file_number_);
@@ -798,9 +814,11 @@ Status VersionSet::LogAndApply(VersionEdit* edit, port::Mutex* mu) {
     edit->SetPrevLogNumber(prev_log_number_);
   }
 
+  // 设定当前的next_file_number和last_sequence，这些都会被持久化到MANIFEST
   edit->SetNextFile(next_file_number_);
   edit->SetLastSequence(last_sequence_);
 
+  // 创建一个新版本，新版本是current_和edit的结合
   Version* v = new Version(this);
   {
     Builder builder(this, current_);
@@ -813,6 +831,8 @@ Status VersionSet::LogAndApply(VersionEdit* edit, port::Mutex* mu) {
   // a temporary file that contains a snapshot of the current version.
   std::string new_manifest_file;
   Status s;
+  // 这里只有Open数据库的时候才会走到，如果需要保存新的MANIFEST，此时这个变量为null
+  // 会创建一个新的MANIFEST，然后将当前的状态写入
   if (descriptor_log_ == nullptr) {
     // No reason to unlock *mu here since we only hit this path in the
     // first call to LogAndApply (when opening the database).
@@ -827,6 +847,7 @@ Status VersionSet::LogAndApply(VersionEdit* edit, port::Mutex* mu) {
 
   // Unlock during expensive MANIFEST log write
   {
+    // 写文件时释放锁
     mu->Unlock();
 
     // Write new record to MANIFEST log
@@ -853,6 +874,7 @@ Status VersionSet::LogAndApply(VersionEdit* edit, port::Mutex* mu) {
 
   // Install the new version
   if (s.ok()) {
+    // 安装新版本，会把v放到VersionSet的链表中，然后将当前Version指向v
     AppendVersion(v);
     log_number_ = edit->log_number_;
     prev_log_number_ = edit->prev_log_number_;
@@ -1078,6 +1100,7 @@ void VersionSet::Finalize(Version* v) {
   v->compaction_score_ = best_score;
 }
 
+// 当打开一个已存在的数据库，读取完现有的MANIFEST后，如果要新建一个MANIFEST替换现有的MANIFEST，就要先调用这个函数，将现有的数据库状态写入
 Status VersionSet::WriteSnapshot(log::Writer* log) {
   // TODO: Break up into multiple records to reduce memory usage on recovery?
 
