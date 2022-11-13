@@ -424,6 +424,9 @@ bool Version::UpdateStats(const GetStats& stats) {
   return false;
 }
 
+// 因为是迭代SSTable的，所以不会存在搜索一个键读取多个SSTable的情况，
+// 这边为了将Seek Compaction考虑进去，采用了抽样的方式，每读取2MB的数据，
+// 会抽样一个键，模拟读取的情况，更新相应的allowed_seeks
 bool Version::RecordReadSample(Slice internal_key) {
   ParsedInternalKey ikey;
   if (!ParseInternalKey(internal_key, &ikey)) {
@@ -1081,13 +1084,18 @@ void VersionSet::Finalize(Version* v) {
       // file size is small (perhaps because of a small write-buffer
       // setting, or very high compression ratios, or lots of
       // overwrites/deletions).
+
+      // Level 0特殊处理，使用文件的个数，而不是大小来确定比率，因为对于大的writer-buffer
+      // Level 0的文件会更大，这时候如果限定总大小，Compaction会偏多
+      // 对于小的Level 0文件，数量会太多，影响读取的速度
       score = v->files_[level].size() /
-              static_cast<double>(config::kL0_CompactionTrigger);
+              static_cast<double>(config::kL0_CompactionTrigger); //4个
     } else {
       // Compute the ratio of current size to size limit.
+      // 计算文件总大小相对于最大大小的比率
       const uint64_t level_bytes = TotalFileSize(v->files_[level]);
       score =
-          static_cast<double>(level_bytes) / MaxBytesForLevel(options_, level);
+          static_cast<double>(level_bytes) / MaxBytesForLevel(options_, level); // 10 ^ level MB
     }
 
     if (score > best_score) {
@@ -1293,12 +1301,14 @@ Compaction* VersionSet::PickCompaction() {
   const bool size_compaction = (current_->compaction_score_ >= 1);
   const bool seek_compaction = (current_->file_to_compact_ != nullptr);
   if (size_compaction) {
+    // 优先考虑Size Compaction
     level = current_->compaction_level_;
     assert(level >= 0);
     assert(level + 1 < config::kNumLevels);
     c = new Compaction(options_, level);
 
     // Pick the first file that comes after compact_pointer_[level]
+    // 根据compact_pointer_[level]找到下一个Compaction的文件f
     for (size_t i = 0; i < current_->files_[level].size(); i++) {
       FileMetaData* f = current_->files_[level][i];
       if (compact_pointer_[level].empty() ||
@@ -1312,6 +1322,7 @@ Compaction* VersionSet::PickCompaction() {
       c->inputs_[0].push_back(current_->files_[level][0]);
     }
   } else if (seek_compaction) {
+    // 对于Seek Compaction，文件已经确定了
     level = current_->file_to_compact_level_;
     c = new Compaction(options_, level);
     c->inputs_[0].push_back(current_->file_to_compact_);
@@ -1323,6 +1334,7 @@ Compaction* VersionSet::PickCompaction() {
   c->input_version_->Ref();
 
   // Files in level 0 may overlap each other, so pick up all overlapping ones
+  // 如果c->inputs_里的文件是Level 0，那么同一Level其它文件也有可能有重叠，则找到其它重叠的文件
   if (level == 0) {
     InternalKey smallest, largest;
     GetRange(c->inputs_[0], &smallest, &largest);
@@ -1333,6 +1345,7 @@ Compaction* VersionSet::PickCompaction() {
     assert(!c->inputs_[0].empty());
   }
 
+  // 找到上一层Level和选定的Level有重叠的文件，这样就找到了两层需要Compaction的文件
   SetupOtherInputs(c);
 
   return c;
@@ -1417,6 +1430,7 @@ void AddBoundaryInputs(const InternalKeyComparator& icmp,
   }
 }
 
+// 找到上一层Level和选定的Level有重叠的文件，这样就找到了两层需要Compaction的文件
 void VersionSet::SetupOtherInputs(Compaction* c) {
   const int level = c->level();
   InternalKey smallest, largest;

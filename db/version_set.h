@@ -369,9 +369,9 @@ class Compaction {
   Compaction(const Options* options, int level);
 
   int level_;
-  uint64_t max_output_file_size_;
+  uint64_t max_output_file_size_; // 生成的文件的最大值
   Version* input_version_;
-  VersionEdit edit_;
+  VersionEdit edit_; // Compaction结果保存的VersionEdit
 
   // Each compaction reads inputs from "level_" and "level_+1"
   std::vector<FileMetaData*> inputs_[2];  // The two sets of inputs

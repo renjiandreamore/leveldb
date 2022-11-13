@@ -603,6 +603,7 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
 
   InternalKey begin_storage, end_storage;
 
+  // 构造ManualCompaction实例manual，保存Manual Compaction的信息
   ManualCompaction manual;
   manual.level = level;
   manual.done = false;
@@ -620,12 +621,19 @@ void DBImpl::TEST_CompactRange(int level, const Slice* begin,
   }
 
   MutexLock l(&mutex_);
+  // 如果manual.done为false，一直循环
   while (!manual.done && !shutting_down_.load(std::memory_order_acquire) &&
          bg_error_.ok()) {
     if (manual_compaction_ == nullptr) {  // Idle
+      // manual_compaction_是DBImpl的一个字段，后台线程会去检查这个字段，如果不为空，会触发Compaction
+      // 所以将manual_compaction_赋值manual，后台线程就会检查触发Compaction
       manual_compaction_ = &manual;
+      // 可能调度一次Compaction
       MaybeScheduleCompaction();
+      // 设置完成后，会重新下一次循环，然后等待本次Compaction完成
     } else {  // Running either my compaction or another compaction.
+      // manual_compaction_已经被设置，表示已经有Manual Compaction进行中了
+      // 等待后台线程完成，完成后，会重新执行循环
       background_work_finished_signal_.Wait();
     }
   }
@@ -702,6 +710,7 @@ void DBImpl::BackgroundCall() {
 void DBImpl::BackgroundCompaction() {
   mutex_.AssertHeld();
 
+  //compact immutable SSTable
   if (imm_ != nullptr) {
     CompactMemTable();
     return;
@@ -711,10 +720,15 @@ void DBImpl::BackgroundCompaction() {
   bool is_manual = (manual_compaction_ != nullptr);
   InternalKey manual_end;
   if (is_manual) {
+    // 先处理Manual Compaction
     ManualCompaction* m = manual_compaction_;
+    // 这里根据manual_compaction_的信息构造一个Compaction实例，表示需要完成的Compaction任务
     c = versions_->CompactRange(m->level, m->begin, m->end);
+    // c为nullptr表示完成了
     m->done = (c == nullptr);
     if (c != nullptr) {
+      // manual_end赋值为当前Compaction范围的结尾
+      // 因为需要Compaction一个Level，防止一次Compaction太多数据，需要从最小键开始分段进行Compaction
       manual_end = c->input(0, c->num_input_files(0) - 1)->largest;
     }
     Log(options_.info_log,
@@ -728,8 +742,12 @@ void DBImpl::BackgroundCompaction() {
 
   Status status;
   if (c == nullptr) {
+    // 表示没有需要Compaction的内容
     // Nothing to do
   } else if (!is_manual && c->IsTrivialMove()) {
+    // 处理一种特殊情况，也就是参与Compaction的文件，level_有一个文件，而level_ + 1 没有
+    // 这时候只需要直接更改元数据，然后文件移动到level_ + 1即可，不需要多路归并
+
     // Move file to next level
     assert(c->num_input_files(0) == 1);
     FileMetaData* f = c->input(0, 0);
@@ -879,6 +897,7 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
       static_cast<long long>(compact->total_bytes));
 
   // Add compaction outputs
+  // 将该删除的文件和改添加的文件更新到VersionEdit里
   compact->compaction->AddInputDeletions(compact->compaction->edit());
   const int level = compact->compaction->level();
   for (size_t i = 0; i < compact->outputs.size(); i++) {
@@ -886,9 +905,11 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
     compact->compaction->edit()->AddFile(level + 1, out.number, out.file_size,
                                          out.smallest, out.largest);
   }
+  // 应用一次版本变更，安装新版本
   return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
 }
 
+// 实际的Compaction
 Status DBImpl::DoCompactionWork(CompactionState* compact) {
   const uint64_t start_micros = env_->NowMicros();
   int64_t imm_micros = 0;  // Micros spent doing imm_ compactions
@@ -901,12 +922,15 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   assert(versions_->NumLevelFiles(compact->compaction->level()) > 0);
   assert(compact->builder == nullptr);
   assert(compact->outfile == nullptr);
+
+  // 取当前最小的使用中的SequenceNumber
   if (snapshots_.empty()) {
     compact->smallest_snapshot = versions_->LastSequence();
   } else {
     compact->smallest_snapshot = snapshots_.oldest()->sequence_number();
   }
 
+  // 参与Compaction的SSTable组成一个迭代器
   Iterator* input = versions_->MakeInputIterator(compact->compaction);
 
   // Release mutex while we're actually doing the compaction work
@@ -933,8 +957,11 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
     }
 
     Slice key = input->key();
+    // ShouldStopBefore判断生成的SSTable和level_ + 2层的有重叠的文件个数，如果超过10个，
+    // 那么这个SSTable生成就完成了,这样保证了新生成的SSTable和上一层不会有过多的重叠
     if (compact->compaction->ShouldStopBefore(key) &&
         compact->builder != nullptr) {
+      // 创建一个新的SSTable，写入文件
       status = FinishCompactionOutputFile(compact, input);
       if (!status.ok()) {
         break;
@@ -953,17 +980,26 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
           user_comparator()->Compare(ikey.user_key, Slice(current_user_key)) !=
               0) {
         // First occurrence of this user key
+        // 如果第一次碰到一个User Key
         current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
         has_current_user_key = true;
         last_sequence_for_key = kMaxSequenceNumber;
       }
 
+      // 如果上一个Key的SequenceNumber <= 最小的存活的Snapshot，那么
+      // 这个Key的SequenceNumber一定 < 最小的存活的Snapshot，那么这个Key就不
+      // 会被任何线程看到了，可以被丢弃，上面碰到了第一个User Key时，设置了
+      // last_sequence_for_key = kMaxSequenceNumber; 保证第一个Key一定不会
+      // 被丢弃。
       if (last_sequence_for_key <= compact->smallest_snapshot) {
         // Hidden by an newer entry for same user key
         drop = true;  // (A)
       } else if (ikey.type == kTypeDeletion &&
                  ikey.sequence <= compact->smallest_snapshot &&
                  compact->compaction->IsBaseLevelForKey(ikey.user_key)) {
+        // 如果碰到了一个删除操作，并且SequenceNumber <= 最小的Snapshot，
+        // 通过IsBaseLevelForKey判断更高Level不会有这个User Key存在，那么这个Key就被丢弃
+
         // For this user key:
         // (1) there is no data in higher levels
         // (2) data in lower levels will have larger sequence numbers
@@ -988,6 +1024,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
     if (!drop) {
       // Open output file if necessary
+      // 没有被丢弃就添加Key
       if (compact->builder == nullptr) {
         status = OpenCompactionOutputFile(compact);
         if (!status.ok()) {
@@ -998,9 +1035,12 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         compact->current_output()->smallest.DecodeFrom(key);
       }
       compact->current_output()->largest.DecodeFrom(key);
+
+      // 没有被丢弃就添加Key
       compact->builder->Add(key, input->value());
 
       // Close output file if it is big enough
+      // 达到文件大小，就写入文件，生成新文件
       if (compact->builder->FileSize() >=
           compact->compaction->MaxOutputFileSize()) {
         status = FinishCompactionOutputFile(compact, input);
@@ -1040,6 +1080,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   stats_[compact->compaction->level() + 1].Add(stats);
 
   if (status.ok()) {
+    // 安装Compaction的结果，删除旧的file，添加新的file，生成新version等
     status = InstallCompactionResults(compact);
   }
   if (!status.ok()) {
